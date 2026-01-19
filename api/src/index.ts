@@ -306,14 +306,20 @@ function computeStats(entries: Array<{ date: string; title: string | null; filmU
   const uniqueDays = new Set(entries.map((e) => e.date));
   const activeDays = uniqueDays.size;
 
-  // 3) Top days (jours avec le plus de films)
+  // 3) Top days + calendar
   const byDay: Record<string, number> = {};
   for (const e of entries) byDay[e.date] = (byDay[e.date] ?? 0) + 1;
+
+  // Calendar list (option A)
+  const calendarList = Object.entries(byDay)
+    .map(([date, count]) => ({ date, count }))
+    .sort((a, b) => a.date.localeCompare(b.date));
 
   const topDays = Object.entries(byDay)
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5)
     .map(([date, count]) => ({ date, count }));
+
 
   // 4) Longest streak
   const longestStreak = computeLongestStreak(entries);
@@ -324,6 +330,7 @@ function computeStats(entries: Array<{ date: string; title: string | null; filmU
     topMonths,
     topDays,
     longestStreak,
+    calendarList,
   };
 }
 
