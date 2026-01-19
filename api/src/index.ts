@@ -241,6 +241,54 @@ async function fetchDiaryForYear(user: string, year: number): Promise<{
     },
   };
 }
+
+function computeLongestStreak(entries: Array<{ date: string }>) {
+  // dates uniques (un jour = 1)
+  const days = Array.from(new Set(entries.map((e) => e.date))).sort(); // "YYYY-MM-DD" se trie bien en string
+
+  let bestLen = 0;
+  let bestStart: string | null = null;
+  let bestEnd: string | null = null;
+
+  let curLen = 0;
+  let curStart: string | null = null;
+  let prevTime: number | null = null;
+
+  for (const d of days) {
+    const t = Date.parse(`${d}T00:00:00Z`);
+
+    if (prevTime === null) {
+      curLen = 1;
+      curStart = d;
+    } else {
+      const diffDays = (t - prevTime) / (1000 * 60 * 60 * 24);
+
+      if (diffDays === 1) {
+        curLen += 1;
+      } else {
+        // streak cassé
+        curLen = 1;
+        curStart = d;
+      }
+    }
+
+    // update best
+    if (curLen > bestLen) {
+      bestLen = curLen;
+      bestStart = curStart;
+      bestEnd = d;
+    }
+
+    prevTime = t;
+  }
+
+  return {
+    length: bestLen,
+    start: bestStart,
+    end: bestEnd,
+  };
+}
+
 function computeStats(entries: Array<{ date: string; title: string | null; filmUrl: string }>) {
   // 1) Films par mois: "2025-11" -> count
   const byMonth: Record<string, number> = {};
@@ -267,12 +315,19 @@ function computeStats(entries: Array<{ date: string; title: string | null; filmU
     .slice(0, 5)
     .map(([date, count]) => ({ date, count }));
 
+  // 4) Longest streak
+  const longestStreak = computeLongestStreak(entries);
+
+
   return {
     activeDays,
     topMonths,
     topDays,
+    longestStreak,
   };
 }
+
+
 
 export default {
   async fetch(request: Request): Promise<Response> {
