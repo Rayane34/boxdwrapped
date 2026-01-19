@@ -288,6 +288,44 @@ function computeLongestStreak(entries: Array<{ date: string }>) {
     end: bestEnd,
   };
 }
+function buildFullYearCalendar(
+  year: number,
+  byDay: Record<string, number>
+): Array<{ date: string; count: number }> {
+  const result: Array<{ date: string; count: number }> = [];
+
+  const start = new Date(Date.UTC(year, 0, 1));  // 1er janvier
+  const end = new Date(Date.UTC(year, 11, 31));  // 31 décembre
+
+  for (
+    let d = new Date(start);
+    d <= end;
+    d.setUTCDate(d.getUTCDate() + 1)
+  ) {
+    const iso = d.toISOString().slice(0, 10); // YYYY-MM-DD
+    result.push({
+      date: iso,
+      count: byDay[iso] ?? 0,
+    });
+  }
+
+  return result;
+}
+function addIntensity(
+  calendar: Array<{ date: string; count: number }>
+): Array<{ date: string; count: number; level: number }> {
+  const maxCount = Math.max(...calendar.map((d) => d.count), 0);
+
+  return calendar.map((d) => {
+    if (d.count === 0 || maxCount === 0) {
+      return { ...d, level: 0 };
+    }
+
+    const level = Math.ceil((d.count / maxCount) * 4);
+    return { ...d, level };
+  });
+}
+
 
 function computeStats(entries: Array<{ date: string; title: string | null; filmUrl: string }>) {
   // 1) Films par mois: "2025-11" -> count
@@ -319,7 +357,11 @@ function computeStats(entries: Array<{ date: string; title: string | null; filmU
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5)
     .map(([date, count]) => ({ date, count }));
-
+  const calendarFull = buildFullYearCalendar(
+    Number(entries[0]?.date.slice(0, 4)),
+    byDay
+  );
+  const calendarHeatMap = addIntensity(calendarFull);
 
   // 4) Longest streak
   const longestStreak = computeLongestStreak(entries);
@@ -331,6 +373,8 @@ function computeStats(entries: Array<{ date: string; title: string | null; filmU
     topDays,
     longestStreak,
     calendarList,
+    calendarFull,
+    calendarHeatMap,
   };
 }
 
