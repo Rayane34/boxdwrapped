@@ -1,4 +1,21 @@
 import * as cheerio from "cheerio";
+type DiaryEntryParsed = {
+  date: string | null;
+  title: string | null;
+  filmUrl: string | null;
+  rewatch: boolean;
+  liked: boolean;
+  rating: number | null;
+};
+
+type DiaryEntry = {
+  date: string;              // non-null (on filtre)
+  title: string | null;
+  filmUrl: string;           // non-null (on filtre)
+  rewatch: boolean;
+  liked: boolean;
+  rating: number | null;
+};
 
 /**
  * BoxdWrapped – Cloudflare Worker API
@@ -53,6 +70,7 @@ async function fetchHtml(url: string): Promise<{
   return { status: res.status, ok: res.ok, html, finalUrl: res.url };
 }
 
+
 /**
  * Parse une page de diary et extrait les entrées.
  * Structure attendue d'après ton HTML:
@@ -61,13 +79,10 @@ async function fetchHtml(url: string): Promise<{
  * - le href ressemble à: /<user>/film/<slug>/
  * - la date est souvent dans data-viewing-date ou dans un lien /diary/films/for/YYYY/MM/DD/
  */
-function parseDiaryEntries(html: string): Array<{
-  date: string | null;
-  title: string | null;
-  filmUrl: string | null;
-}> {
+function parseDiaryEntries(html: string): DiaryEntryParsed[] {
+
   const $ = cheerio.load(html);
-  const entries: Array<{ date: string | null; title: string | null; filmUrl: string | null }> = [];
+  const entries: DiaryEntryParsed[] = [];
 
   // On cible d'abord les vraies lignes du diary
   const rows = $("tr.diary-entry-row");
@@ -92,16 +107,34 @@ function parseDiaryEntries(html: string): Array<{
     const filmAnchor = row.find("h2.name a").first();
     const href = textOrNull(filmAnchor.attr("href"));
     const title = textOrNull(filmAnchor.text());
-
+    
     if (!href) return;
 
     // href peut être relatif, on construit une URL complète
     const filmUrl = href.startsWith("http") ? href : `https://letterboxd.com${href}`;
+    const rewatch = row.find("td.col-rewatch .icon-rewatch").length > 0;
 
+    
+    const liked = row.find("td.col-like .like-link-target.-on").length > 0;
+
+    let rating: number | null = null;
+
+const ratingInput = row.find("td.col-rating input.rateit-field").first();
+if (ratingInput.length) {
+  const raw = Number(ratingInput.attr("value"));
+  if (Number.isFinite(raw)) {
+    rating = raw / 2; // conversion /10 -> /5
+  }
+}
+
+    
     entries.push({
       date: date ? date.slice(0, 10) : null,
       title,
       filmUrl,
+      rewatch,
+      liked,
+      rating,
     });
   });
 
@@ -124,6 +157,9 @@ function parseDiaryEntries(html: string): Array<{
         date: date ? date.slice(0, 10) : null,
         title,
         filmUrl,
+        rewatch: false,
+        liked: false,
+        rating: null,
       });
     });
   }
@@ -139,7 +175,7 @@ function parseDiaryEntries(html: string): Array<{
 async function fetchDiaryForYear(user: string, year: number): Promise<{
   year: number;
   pagesFetched: number;
-  entries: Array<{ date: string; title: string | null; filmUrl: string }>;
+  entries: DiaryEntry[];
   stoppedBecause: string;
   debug: {
     diaryBaseUrl: string;
@@ -150,9 +186,10 @@ async function fetchDiaryForYear(user: string, year: number): Promise<{
     filmSubstringCount: number;
     rssHref: string;
     htmlSnippet: string;
+    firstRowDebug: any;
   };
 }> {
-  const entries: Array<{ date: string; title: string | null; filmUrl: string }> = [];
+  const entries: DiaryEntry[] = [];
 
   const diaryBaseUrl = `https://letterboxd.com/${encodeURIComponent(user)}/diary/films/for/${year}/`;
 
@@ -167,6 +204,7 @@ async function fetchDiaryForYear(user: string, year: number): Promise<{
   let filmSubstringCount = 0;
   let rssHref = "";
   let htmlSnippet = "";
+  let firstRowDebug: any = null;
 
   for (let page = 1; page <= MAX_PAGES; page++) {
     const pageUrl = page === 1 ? diaryBaseUrl : `${diaryBaseUrl}page/${page}/`;
@@ -177,6 +215,26 @@ async function fetchDiaryForYear(user: string, year: number): Promise<{
     lastFinalUrl = finalUrl;
 
     const $d = cheerio.load(html);
+    // Debug: inspecter la première ligne du diary (page 1) pour trouver rating/like/rewatch
+if (page === 1 && firstRowDebug === null) {
+  const row = cheerio.load(html)("tr.diary-entry-row").first();
+
+  if (row.length) {
+    firstRowDebug = {
+      hasTdRating: row.find("td.col-rating").length,
+      ratingTdHtml: row.find("td.col-rating").html()?.slice(0, 300) ?? null,
+
+      hasTdLike: row.find("td.col-like").length,
+      likeTdHtml: row.find("td.col-like").html()?.slice(0, 300) ?? null,
+
+      hasTdRewatch: row.find("td.col-rewatch").length,
+      rewatchTdHtml: row.find("td.col-rewatch").html()?.slice(0, 300) ?? null,
+    };
+  } else {
+    firstRowDebug = { error: "No tr.diary-entry-row found on page 1" };
+  }
+}
+
     diaryTitle = ($d("title").first().text() || "").trim();
 
     // On compte large, car les liens peuvent être /<user>/film/...
@@ -200,6 +258,8 @@ async function fetchDiaryForYear(user: string, year: number): Promise<{
     }
 
     const pageEntries = parseDiaryEntries(html);
+    
+    
 
     // Sur une page filtrée par année, si elle est vide on stop direct
     if (pageEntries.length === 0) {
@@ -215,6 +275,9 @@ async function fetchDiaryForYear(user: string, year: number): Promise<{
         date,
         title: e.title,
         filmUrl: e.filmUrl,
+        rewatch: e.rewatch,
+        liked: e.liked,
+        rating: e.rating,
       });
     }
   }
@@ -238,11 +301,12 @@ async function fetchDiaryForYear(user: string, year: number): Promise<{
       filmSubstringCount,
       rssHref,
       htmlSnippet,
+      firstRowDebug,
     },
   };
 }
 
-function computeLongestStreak(entries: Array<{ date: string }>) {
+function computeLongestStreak(entries: DiaryEntry[]) {
   // dates uniques (un jour = 1)
   const days = Array.from(new Set(entries.map((e) => e.date))).sort(); // "YYYY-MM-DD" se trie bien en string
 
@@ -327,7 +391,7 @@ function addIntensity(
 }
 
 
-function computeStats(entries: Array<{ date: string; title: string | null; filmUrl: string }>) {
+function computeStats(entries: DiaryEntry[], year: number) {
   // 1) Films par mois: "2025-11" -> count
   const byMonth: Record<string, number> = {};
   for (const e of entries) {
@@ -357,14 +421,42 @@ function computeStats(entries: Array<{ date: string; title: string | null; filmU
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5)
     .map(([date, count]) => ({ date, count }));
-  const calendarFull = buildFullYearCalendar(
-    Number(entries[0]?.date.slice(0, 4)),
-    byDay
-  );
+  const calendarFull = buildFullYearCalendar(year, byDay);
+
   const calendarHeatMap = addIntensity(calendarFull);
 
   // 4) Longest streak
   const longestStreak = computeLongestStreak(entries);
+
+  // === Rewatch stats ===
+  const rewatchMap: Record<string, { title: string; count: number }> = {};
+
+  for (const e of entries) {
+    if (!e.rewatch || !e.filmUrl || !e.title) continue;
+
+    if (!rewatchMap[e.filmUrl]) {
+      rewatchMap[e.filmUrl] = { title: e.title, count: 0 };
+    }
+    rewatchMap[e.filmUrl].count++;
+  }
+
+  const topRewatched = Object.values(rewatchMap)
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 5);
+
+  // === Rating stats ===
+  const topRated = entries
+    .filter((e) => e.rating !== null)
+    .sort((a, b) => (b.rating! - a.rating!))
+    .slice(0, 10)
+    .map((e) => ({
+      title: e.title,
+      rating: e.rating,
+      filmUrl: e.filmUrl,
+    }));
+
+  // === Likes ===
+  const likedCount = entries.filter((e) => e.liked).length;
 
 
   return {
@@ -375,6 +467,9 @@ function computeStats(entries: Array<{ date: string; title: string | null; filmU
     calendarList,
     calendarFull,
     calendarHeatMap,
+    topRewatched,
+    topRated,
+    likedCount,
   };
 }
 
@@ -419,7 +514,7 @@ export default {
       const profile = { pageTitle: textOrNull($p("title").first().text()) };
 
       const diary = await fetchDiaryForYear(user, year);
-	  const stats = computeStats(diary.entries);
+	    const stats = computeStats(diary.entries, year);
 
 
       return json({
